@@ -25,13 +25,15 @@ Basicmicro roboclaw( &Serial2, 10000 );
 /*---------------------------------------------------------------------
 SERVO PINS
 ---------------------------------------------------------------------*/
-constexpr int SERVO_PIN = 32;
+constexpr int SERVO_PIN = 18;
 Servo servo;
 
 /*---------------------------------------------------------------------
 BLUETOOTH CONTROLLER
 ---------------------------------------------------------------------*/
 ControllerPtr myController = nullptr;
+bool prevY = false;
+bool isStepperEnabled = true;
 
 
 /**********************************************************************
@@ -48,6 +50,11 @@ void on_connected_controller( ControllerPtr ctl )
 void on_disconnected_controller( ControllerPtr ctl ) 
 {
     if ( myController == ctl ) myController = nullptr;
+}
+
+void set_motors(int16_t left_duty, int16_t right_duty) {
+    roboclaw.DutyM1(ROBOCLAW_ADDRESS, left_duty);
+    roboclaw.DutyM2(ROBOCLAW_ADDRESS, right_duty);
 }
 
 
@@ -73,7 +80,7 @@ void setup()
     -----------------------------------------------------------------*/
     Serial2.begin( ROBOCLAW_BAUD, SERIAL_8N1, ROBOCLAW_RX, ROBOCLAW_TX );
     roboclaw.begin( ROBOCLAW_BAUD );
-    setMotors(0);
+    set_motors( 0, 0 );
 
     /*-----------------------------------------------------------------
     Keep stepper driver disabled on robot initialization 
@@ -101,9 +108,9 @@ void setup()
 void step_claw( bool direction )
 {
     digitalWrite( DIR_PIN, direction ? HIGH : LOW );
-    delayMicroseconds(10);
+    // delayMicroseconds(10);
     
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 50; i++) {
         digitalWrite( STEP_PIN, HIGH );
         delayMicroseconds( 1000 );
         digitalWrite( STEP_PIN, LOW );
@@ -117,10 +124,54 @@ void step_claw( bool direction )
 **********************************************************************/
 void loop()
 {
-    bool dataUpdated = BP32.update();
+    BP32.update();
 
-    if ( myController && dataUpdated && myController->isConnected() && myController->hasData() )
+    if ( myController && myController->isConnected() && myController->hasData() )
     {
-        
+        /*-------------------------------------------------------------
+        Drivetrain Control (Left Joystick Y, Right Joystick X)
+        -------------------------------------------------------------*/
+        int throttle = (myController->axisY() * -1) * 64; 
+        int steering = (myController->axisRX() * -1) * 64;       
+
+        int left_speed = constrain(throttle + steering, -32767, 32767);
+        int right_speed = constrain(throttle - steering, -32767, 32767);
+
+        set_motors( left_speed, right_speed ); 
+
+        /*-------------------------------------------------------------
+        Claw Pitch Control (D-Pad Up and Down)
+        -------------------------------------------------------------*/
+        if (myController->dpad() & DPAD_DOWN) {
+            // Enable stepper motor before moving
+            digitalWrite(EN_PIN, LOW);
+            isStepperEnabled = true;
+            step_claw(true); 
+        } else if (myController->dpad() & DPAD_UP) {
+            // Enable stepper motor before moving
+            digitalWrite(EN_PIN, LOW); 
+            isStepperEnabled = true;
+            step_claw(false); 
+        }
+
+        /*-------------------------------------------------------------
+        Manual Stepper Relax Toggle (Y Button)
+        -------------------------------------------------------------*/
+        bool currentY = myController->y();
+        if (currentY && !prevY) {
+            isStepperEnabled = !isStepperEnabled;
+            digitalWrite(EN_PIN, isStepperEnabled ? LOW : HIGH); 
+        }
+        // save state for next iteration
+        prevY = currentY; 
+
+        /*-------------------------------------------------------------
+        Claw Grip Control (Face Buttons)
+        -------------------------------------------------------------*/
+        if (myController->a()) {
+            servo.write(0);
+        } else if (myController->b()) {
+            servo.write(90);
+        }
     }
 }
